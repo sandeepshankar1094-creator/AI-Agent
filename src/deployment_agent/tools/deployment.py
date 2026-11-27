@@ -5,6 +5,7 @@ from deployment_agent.agent.models import AgentState, DeploymentPlan
 from deployment_agent.integrations.github_api import GitHubClient
 from deployment_agent.tools.deployment_generator import generate_files
 from deployment_agent.tools.dockerfile import generate_project_dockerfile
+from deployment_agent.tools.helm_repository import add_helm_repository_files
 
 
 def summarize_requirement(
@@ -98,3 +99,9 @@ def generate_dockerfile_only(
         "source_files": {},
         "generated_files": generated_files,
     }
+
+
+def generate_helm_chart_only(
+    state: AgentState, values_model=None, client: GitHubClient | None = None
+) -> AgentState:
+    return add_helm_repository_files(state, values_model, client)

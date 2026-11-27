@@ -33,10 +33,36 @@ class ToolSelection(BaseModel):
         "read_repository_files",
         "create_dockerfile_only",
         "create_ci_cd_pipeline",
+        "create_helm_chart_only",
         "generate_deployment_configuration",
     ]
     normalized_request: str = Field(min_length=1)
     file_paths: list[str] = Field(default_factory=list, max_length=3)
+
+
+class HelmValuesOverrideResponse(BaseModel):
+    overrides_yaml: str = Field(
+        description=(
+            "YAML mapping containing only explicit Helm values overrides from "
+            "the user's request; empty when none are requested."
+        )
+    )
+
+
+class ValidationRepairResponse(BaseModel):
+    updated_files: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "Replacement contents for only the generated YAML files that need "
+            "correction; leave the mapping empty if no safe repair is possible."
+        ),
+    )
+
+
+class PreviewChange(TypedDict):
+    repository: str
+    path: str
+    diff: str
 
 
 class AgentState(TypedDict, total=False):
@@ -53,7 +79,12 @@ class AgentState(TypedDict, total=False):
     plan: DeploymentPlan
     source_files: dict[str, str]
     generated_files: dict[str, str]
+    external_generated_files: dict[str, str]
+    helm_merge_warnings: list[str]
+    preview_changes: list[PreviewChange]
+    repair_attempt: int
     validation_errors: list[str]
     validation_analysis: str
     pull_request_url: str
+    pull_request_urls: list[str]
     error: str

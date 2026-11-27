@@ -1,5 +1,7 @@
 """GitHub REST API client used by repository and pull-request tools."""
 
+import base64
+import time
 from urllib.parse import quote
 
 import requests
@@ -7,6 +9,11 @@ import requests
 
 class GitHubAPIError(RuntimeError):
     pass
+
+
+_RETRYABLE_STATUSES = {429, 500, 502, 503, 504}
+_RETRY_SAFE_METHODS = {"GET", "HEAD", "OPTIONS", "PUT", "PATCH", "DELETE"}
+_MAX_RETRIES = 3
 
 
 class GitHubClient:
@@ -21,10 +28,45 @@ class GitHubClient:
             }
         )
 
+    def _send(self, method: str, path: str, **kwargs):
+        retry_safe = method.upper() in _RETRY_SAFE_METHODS
+        for attempt in range(_MAX_RETRIES + 1):
+            try:
+                response = self.session.request(
+                    method, f"{self.api_url}{path}", timeout=30, **kwargs
+                )
+            except requests.RequestException as exc:
+                if not retry_safe or attempt == _MAX_RETRIES:
+                    raise GitHubAPIError(
+                        f"GitHub API {method} {path} request failed: {exc}"
+                    ) from exc
+                delay = min(0.25 * (2**attempt), 5)
+                time.sleep(delay)
+                continue
+
+            rate_limited = response.status_code == 403 and (
+                response.headers.get("Retry-After")
+                or response.headers.get("X-RateLimit-Remaining") == "0"
+            )
+            if (
+                retry_safe
+                and attempt < _MAX_RETRIES
+                and (
+                    response.status_code in _RETRYABLE_STATUSES
+                    or rate_limited
+                )
+            ):
+                try:
+                    delay = min(float(response.headers["Retry-After"]), 5)
+                except (KeyError, ValueError):
+                    delay = min(0.25 * (2**attempt), 5)
+                time.sleep(delay)
+                continue
+            return response
+        raise GitHubAPIError(f"GitHub API {method} {path} request failed")
+
     def _request(self, method: str, path: str, **kwargs):
-        response = self.session.request(
-            method, f"{self.api_url}{path}", timeout=30, **kwargs
-        )
+        response = self._send(method, path, **kwargs)
         if not response.ok:
             raise GitHubAPIError(
                 f"GitHub API {method} {path} failed "
@@ -34,10 +76,18 @@ class GitHubClient:
             return response.json()
         return None
 
+    @staticmethod
+    def _validate_file_path(path: str) -> None:
+        if (
+            not path
+            or path.startswith(("/", "\\"))
+            or "\\" in path
+            or any(part in {"", ".", ".."} for part in path.split("/"))
+        ):
+            raise GitHubAPIError(f"Invalid repository-relative file path: {path!r}")
+
     def _get_optional(self, path: str):
-        response = self.session.get(
-            f"{self.api_url}{path}", timeout=30
-        )
+        response = self._send("GET", path)
         if response.status_code == 404:
             return None
         if not response.ok:
@@ -70,11 +120,13 @@ class GitHubClient:
         return branch, tree
 
     def get_file(self, owner: str, repo: str, path: str, ref: str) -> str | None:
+        self._validate_file_path(path)
         quoted = f"{quote(owner, safe='')}/{quote(repo, safe='')}"
-        response = self.session.get(
-            f"{self.api_url}/repos/{quoted}/contents/{quote(path, safe='/')}",
+        path_url = f"/repos/{quoted}/contents/{quote(path, safe='/')}"
+        response = self._send(
+            "GET",
+            path_url,
             params={"ref": ref},
-            timeout=30,
         )
         if response.status_code == 404:
             return None
@@ -86,8 +138,6 @@ class GitHubClient:
         content = response.json()
         if content.get("encoding") != "base64":
             raise GitHubAPIError(f"Unsupported GitHub file encoding for {path}")
-        import base64
-
         return base64.b64decode(content["content"]).decode("utf-8")
 
     def create_pull_request(
@@ -101,10 +151,32 @@ class GitHubClient:
         body: str,
     ) -> str:
         quoted = f"{quote(owner, safe='')}/{quote(repo, safe='')}"
+        if not files:
+            raise GitHubAPIError("No generated files were provided for the pull request")
+        for path in files:
+            self._validate_file_path(path)
         branch_ref_path = (
             f"/repos/{quoted}/git/ref/heads/{quote(branch, safe='')}"
         )
         existing_branch = self._get_optional(branch_ref_path)
+        pulls = self._request(
+            "GET",
+            f"/repos/{quoted}/pulls",
+            params={"head": f"{owner}:{branch}", "base": base, "state": "open"},
+        )
+        target_ref = branch if existing_branch else base
+        changed_files = {
+            path: content
+            for path, content in files.items()
+            if self.get_file(owner, repo, path, target_ref) != content
+        }
+        if not changed_files:
+            if pulls:
+                return pulls[0]["html_url"]
+            raise GitHubAPIError(
+                "Generated files already match the target branch; no PR is needed"
+            )
+
         if existing_branch:
             parent_sha = existing_branch["object"]["sha"]
         else:
@@ -118,7 +190,7 @@ class GitHubClient:
         )
         base_tree = parent_commit["tree"]["sha"]
         entries = []
-        for path, content in files.items():
+        for path, content in changed_files.items():
             blob = self._request(
                 "POST",
                 f"/repos/{quoted}/git/blobs",
@@ -154,11 +226,6 @@ class GitHubClient:
                 json={"ref": f"refs/heads/{branch}", "sha": commit["sha"]},
             )
 
-        pulls = self._request(
-            "GET",
-            f"/repos/{quoted}/pulls",
-            params={"head": f"{owner}:{branch}", "base": base, "state": "open"},
-        )
         if pulls:
             pull_request = pulls[0]
             self._request(

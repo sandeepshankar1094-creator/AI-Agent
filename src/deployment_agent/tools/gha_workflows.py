@@ -2,6 +2,12 @@ import json
 from pathlib import Path, PurePosixPath
 
 from deployment_agent.agent.models import AgentState
+from deployment_agent.integrations.github_api import GitHubClient
+from deployment_agent.tools.helm_repository import add_helm_repository_files
+from deployment_agent.tools.request_intent import (
+    requests_cd_configuration,
+    requests_helm_secret_configuration,
+)
 
 
 _TEMPLATE_DIRECTORY = (
@@ -20,7 +26,11 @@ def _render_default_branch(content: str, branch: str) -> str:
     )
 
 
-def generate_ci_cd_pipeline(state: AgentState) -> AgentState:
+def generate_ci_cd_pipeline(
+    state: AgentState,
+    values_model=None,
+    client: GitHubClient | None = None,
+) -> AgentState:
     tree = state["tree"]
     paths = {entry["path"] for entry in tree if entry.get("type") == "blob"}
     has_angular = any(PurePosixPath(path).name == "angular.json" for path in paths)
@@ -54,4 +64,10 @@ def generate_ci_cd_pipeline(state: AgentState) -> AgentState:
             f".github/workflows/{template_name.lower()}"
         ] = _render_default_branch(content, state["default_branch"])
 
-    return {"generated_files": generated_files}
+    result: AgentState = {"generated_files": generated_files}
+    requirement = state.get("requirement", "")
+    if requests_cd_configuration(
+        requirement
+    ) or requests_helm_secret_configuration(requirement):
+        result.update(add_helm_repository_files(state, values_model, client))
+    return result

@@ -31,6 +31,7 @@ _TEMPLATE_ROOT = Path("templates/GHA-Workflows")
 def test_ci_cd_generation_uses_matching_workflow_templates(project, tree):
     state = {
         "repo": "sample-app",
+        "requirement": "Create CI/CD pipeline",
         "default_branch": "develop",
         "tree": tree,
     }
@@ -57,9 +58,43 @@ def test_ci_cd_generation_uses_matching_workflow_templates(project, tree):
     assert "deploy/chart/Chart.yaml" not in result["generated_files"]
 
 
+def test_cd_pipeline_also_generates_shared_helm_repository_configuration():
+    state = {
+        "repo": "java-springboot",
+        "requirement": "Create a CD pipeline",
+        "default_branch": "main",
+        "tree": [{"path": "pom.xml", "type": "blob"}],
+    }
+
+    result = generate_ci_cd_pipeline(state)
+
+    assert set(result["generated_files"]) == {
+        ".github/workflows/ci.yml",
+        ".github/workflows/cd.yml",
+    }
+    assert set(result["external_generated_files"]) == {
+        "Application/java/java-springboot/configmap.yaml",
+        "Application/java/java-springboot/values.yaml",
+    }
+
+
+def test_ci_only_does_not_create_shared_helm_repository_files():
+    state = {
+        "repo": "java-springboot",
+        "requirement": "Create a CI workflow",
+        "default_branch": "main",
+        "tree": [{"path": "pom.xml", "type": "blob"}],
+    }
+
+    result = generate_ci_cd_pipeline(state)
+
+    assert "external_generated_files" not in result
+
+
 def test_ci_cd_generation_rejects_projects_without_a_matching_template():
     state = {
         "repo": "sample-app",
+        "requirement": "Create CI/CD pipeline",
         "default_branch": "main",
         "tree": [{"path": "requirements.txt", "type": "blob"}],
     }

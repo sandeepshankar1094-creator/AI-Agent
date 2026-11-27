@@ -7,6 +7,7 @@ from deployment_agent.agent.models import DeploymentPlan
 from deployment_agent.tools.deployment import (
     generate_deployment_files,
     generate_dockerfile_only,
+    generate_helm_chart_only,
 )
 from deployment_agent.tools.dockerfile import generate_project_dockerfile
 
@@ -61,6 +62,35 @@ def test_dockerfile_only_generation_skips_deployment_files():
     assert "workflow_path" not in result["generated_files"]
     assert "validation_errors" not in result
     assert result["plan"].create_dockerfile
+
+
+def test_helm_chart_only_generation_targets_shared_chart_repository():
+    state = {
+        "repo": "java-springboot",
+    }
+
+    result = generate_helm_chart_only(state)
+
+    assert set(result["external_generated_files"]) == {
+        "Application/java/java-springboot/configmap.yaml",
+        "Application/java/java-springboot/values.yaml",
+    }
+    assert "validation_errors" not in result
+    assert "generated_files" not in result
+    configmap = yaml.safe_load(
+        result["external_generated_files"][
+            "Application/java/java-springboot/configmap.yaml"
+        ]
+    )
+    values = yaml.safe_load(
+        result["external_generated_files"][
+            "Application/java/java-springboot/values.yaml"
+        ]
+    )
+    assert configmap["app_name"] == "java-springboot"
+    assert values["app"]["containers"]["image"] == "java-springboot"
+    assert values["app"]["labels"]["project"] == "java"
+    assert values["service"]["labels"]["app"] == "java-springboot"
 
 
 def test_angular_project_uses_node_template_and_build_output_path():
